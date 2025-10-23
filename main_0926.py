@@ -377,7 +377,39 @@ class ColbertFdeRetriever:
             query_fde = cached_fde
 
         start_fde_scores = time.perf_counter()
-        fde_scores = self.fde_index @ query_fde
+
+        ##### 원본 버전
+        #fde_scores = self.fde_index @ query_fde
+
+
+        ################## GPU 1개 버전 ###########################3
+        if DEVICE in ("cuda", "mps") and torch.cuda.is_available() if DEVICE == "cuda" else DEVICE == "mps":
+            logging.info(f"CUDA_OR_MPS로 구동됨")
+            q = torch.from_numpy(query_fde).to(dtype=torch.float32, device=DEVICE).reshape(-1)
+            # self.fde_index가 numpy array(또는 memmap)인 경우 chunk 처리
+            if isinstance(self.fde_index, np.ndarray):
+                rows = self.fde_index.shape[0]
+                # 기본 chunk 크기 (조절 가능)
+                # chunk_size = 32768
+                # chunk_size = 65536
+                chunk_size = 16384
+                scores_parts = []
+                for i in range(0, rows, chunk_size):
+                    chunk_np = self.fde_index[i : i + chunk_size]
+                    chunk_t = torch.from_numpy(chunk_np).to(dtype=torch.float32, device=DEVICE)
+                    scores_chunk = (chunk_t @ q).cpu().numpy()
+                    scores_parts.append(scores_chunk)
+                fde_scores = np.concatenate(scores_parts, axis=0)
+            else:
+                # 이미 torch tensor인 경우 전체를 바로 GPU로 옮겨 계산
+                idx_t = self.fde_index.to(dtype=torch.float32, device=DEVICE)
+                fde_scores = (idx_t @ q).cpu().numpy()
+        else:
+            # fallback: CPU numpy 연산
+            logging.info(f"CPU로 구동됨")
+            fde_scores = self.fde_index @ query_fde
+        ############## GPU 1개로 구동됨 END ##################
+
         end_fde_scores = time.perf_counter() - start_fde_scores
         start_argsort = time.perf_counter()
         order_fde = np.argsort(-fde_scores)
